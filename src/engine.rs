@@ -44,6 +44,8 @@ pub struct Settings {
     pub seed: u32,
     /// Derive the randomness from the song position so playback repeats identically.
     pub deterministic: bool,
+    /// Probability in `[0, 1]` that crush, gate, or rebound also runs on a history effect.
+    pub stack: f32,
 }
 
 /// SplitMix64. Tiny, allocation free, and good enough for musical dice rolls.
@@ -178,6 +180,8 @@ struct Event {
     expected_len: f64,
     steps_left: u32,
     env: f32,
+    /// Crush, gate, or rebound applied to a history effect's output.
+    color: Option<Kind>,
 }
 
 impl Event {
@@ -189,94 +193,136 @@ impl Event {
         gate_coef: f32,
         sample_rate: f32,
     ) -> [f32; 2] {
-        let t = self.elapsed as f64;
-        let out = match &mut self.kind {
-            Kind::Stutter {
-                offset,
-                speed,
-                slice_len,
-                shrink,
-                repeat_start,
-            } => {
-                let mut p = (self.elapsed - *repeat_start) as f64;
-                if p >= *slice_len {
-                    *repeat_start = self.elapsed;
-                    p = 0.0;
-                    if *shrink {
-                        *slice_len = (*slice_len * 0.75).max(MIN_SLICE_SAMPLES * 4.0);
-                    }
-                }
-                let window = (p / fade_len).min((*slice_len - p) / fade_len).min(1.0) as f32;
-                let [l, r] = history.read(self.origin - *offset + p * *speed);
-                [l * window, r * window]
-            }
-            Kind::Reverse => history.read(self.origin - 1.0 - t),
-            Kind::TapeStop { pos } => {
-                let out = history.read(self.origin + *pos);
-                let remaining = (1.0 - t / self.expected_len).max(0.0);
-                *pos += remaining * remaining.sqrt();
-                out
-            }
-            Kind::Scramble { offset } => history.read(self.origin - *offset + t),
-            Kind::Crush {
-                levels,
-                hold,
-                hold_left,
-                held,
-            } => {
-                if *hold_left == 0 {
-                    *held = input.map(|x| (x * *levels).round() / *levels);
-                    *hold_left = *hold;
-                }
-                *hold_left -= 1;
-                *held
-            }
-            Kind::Gate { period, gain } => {
-                let target = if t % *period < *period * 0.5 {
-                    1.0
-                } else {
-                    0.0
-                };
-                *gain += (target - *gain) * gate_coef;
-                input.map(|x| x * *gain)
-            }
-            Kind::Rebound {
-                floor_hz,
-                divisions,
-                drop_mask,
-                ic1eq,
-                ic2eq,
-            } => {
-                let progress = (t / self.expected_len).clamp(0.0, 1.0) as f32;
-                let n = *divisions as f32;
-                let index = ((progress * n).floor() as u32).min(*divisions - 1);
-                let shut = (*drop_mask & (1u32 << index)) != 0;
-                // Sample the open–shut–open curve once per hold, so the cutoff jumps instead of gliding.
-                let bounce = if shut {
-                    1.0
-                } else {
-                    let center = (index as f32 + 0.5) / n;
-                    (center * std::f32::consts::PI).sin()
-                };
-                let open_hz = sample_rate * 0.42;
-                let floor = if shut { REBOUND_SHUT_HZ } else { *floor_hz };
-                let cutoff = open_hz * (floor / open_hz).powf(bounce);
-                let mut out = [0.0; 2];
-                for ch in 0..2 {
-                    out[ch] = svf_low(
-                        input[ch],
-                        cutoff,
-                        REBOUND_Q,
-                        sample_rate,
-                        &mut ic1eq[ch],
-                        &mut ic2eq[ch],
-                    );
-                }
-                out
-            }
+        let elapsed = self.elapsed;
+        let expected_len = self.expected_len;
+        let origin = self.origin;
+        let carrier = voice(
+            &mut self.kind,
+            elapsed,
+            expected_len,
+            origin,
+            history,
+            input,
+            fade_len,
+            gate_coef,
+            sample_rate,
+        );
+        let out = if let Some(color) = &mut self.color {
+            voice(
+                color,
+                elapsed,
+                expected_len,
+                origin,
+                history,
+                carrier,
+                fade_len,
+                gate_coef,
+                sample_rate,
+            )
+        } else {
+            carrier
         };
         self.elapsed += 1;
         out
+    }
+}
+
+fn voice(
+    kind: &mut Kind,
+    elapsed: u64,
+    expected_len: f64,
+    origin: f64,
+    history: &History,
+    input: [f32; 2],
+    fade_len: f64,
+    gate_coef: f32,
+    sample_rate: f32,
+) -> [f32; 2] {
+    let t = elapsed as f64;
+    match kind {
+        Kind::Stutter {
+            offset,
+            speed,
+            slice_len,
+            shrink,
+            repeat_start,
+        } => {
+            let mut p = (elapsed - *repeat_start) as f64;
+            if p >= *slice_len {
+                *repeat_start = elapsed;
+                p = 0.0;
+                if *shrink {
+                    *slice_len = (*slice_len * 0.75).max(MIN_SLICE_SAMPLES * 4.0);
+                }
+            }
+            let window = (p / fade_len).min((*slice_len - p) / fade_len).min(1.0) as f32;
+            let [l, r] = history.read(origin - *offset + p * *speed);
+            [l * window, r * window]
+        }
+        Kind::Reverse => history.read(origin - 1.0 - t),
+        Kind::TapeStop { pos } => {
+            let out = history.read(origin + *pos);
+            let remaining = (1.0 - t / expected_len).max(0.0);
+            *pos += remaining * remaining.sqrt();
+            out
+        }
+        Kind::Scramble { offset } => history.read(origin - *offset + t),
+        Kind::Crush {
+            levels,
+            hold,
+            hold_left,
+            held,
+        } => {
+            if *hold_left == 0 {
+                *held = input.map(|x| (x * *levels).round() / *levels);
+                *hold_left = *hold;
+            }
+            *hold_left -= 1;
+            *held
+        }
+        Kind::Gate { period, gain } => {
+            let target = if t % *period < *period * 0.5 {
+                1.0
+            } else {
+                0.0
+            };
+            *gain += (target - *gain) * gate_coef;
+            input.map(|x| x * *gain)
+        }
+        Kind::Rebound {
+            floor_hz,
+            divisions,
+            drop_mask,
+            ic1eq,
+            ic2eq,
+        } => {
+            let progress = (t / expected_len).clamp(0.0, 1.0) as f32;
+            let n = *divisions as f32;
+            let index = ((progress * n).floor() as u32).min(*divisions - 1);
+            let shut = (*drop_mask & (1u32 << index)) != 0;
+            // Sample the open–shut–open curve once per hold, so the cutoff jumps instead of gliding.
+            let bounce = if shut {
+                1.0
+            } else {
+                let center = (index as f32 + 0.5) / n;
+                (center * std::f32::consts::PI).sin()
+            };
+            let open_hz = sample_rate * 0.42;
+            let floor = if shut { REBOUND_SHUT_HZ } else { *floor_hz };
+            let cutoff = open_hz * (floor / open_hz).powf(bounce);
+            let mut out = [0.0; 2];
+            for ch in 0..2 {
+                out[ch] = svf_low(
+                    input[ch],
+                    cutoff,
+                    REBOUND_Q,
+                    sample_rate,
+                    &mut ic1eq[ch],
+                    &mut ic2eq[ch],
+                );
+            }
+            out
+        }
     }
 }
 
@@ -461,7 +507,42 @@ impl Engine {
             .min(budget);
         let expected_len = steps as f64 * step_len;
 
-        let kind = match mode {
+        let kind = Self::kind_for(mode, rng, step_len, expected_len, history_len, steps);
+        // A history effect can also be crushed, gated, or filtered. Color-only hits are left alone,
+        // and a stack of 0 skips the roll so existing patterns stay put.
+        let color = if matches!(
+            mode,
+            Mode::Stutter | Mode::Reverse | Mode::TapeStop | Mode::Scramble
+        ) && s.stack > 0.0
+            && rng.next_f32() < s.stack
+        {
+            Self::pick_color(rng, &s.weights).map(|color_mode| {
+                Self::kind_for(color_mode, rng, step_len, expected_len, history_len, steps)
+            })
+        } else {
+            None
+        };
+
+        Some(Event {
+            kind,
+            origin: now,
+            elapsed: 0,
+            expected_len,
+            steps_left: steps,
+            env: 0.0,
+            color,
+        })
+    }
+
+    fn kind_for(
+        mode: Mode,
+        rng: &mut Rng,
+        step_len: f64,
+        expected_len: f64,
+        history_len: usize,
+        steps: u32,
+    ) -> Kind {
+        match mode {
             Mode::Stutter => {
                 let slice_len = (step_len / rng.pick(&[1.0, 2.0, 2.0, 3.0, 4.0, 4.0, 6.0, 8.0]))
                     .max(MIN_SLICE_SAMPLES);
@@ -526,16 +607,31 @@ impl Engine {
                     ic2eq: [0.0; 2],
                 }
             }
-        };
+        }
+    }
 
-        Some(Event {
-            kind,
-            origin: now,
-            elapsed: 0,
-            expected_len,
-            steps_left: steps,
-            env: 0.0,
-        })
+    fn pick_color(rng: &mut Rng, weights: &[f32; MODES.len()]) -> Option<Mode> {
+        const COLORS: [Mode; 3] = [Mode::Crush, Mode::Gate, Mode::Rebound];
+        let color_weights = COLORS.map(|mode| {
+            MODES
+                .iter()
+                .zip(weights)
+                .find(|(candidate, _)| **candidate == mode)
+                .map(|(_, weight)| weight.max(0.0))
+                .unwrap_or(0.0)
+        });
+        let total: f32 = color_weights.iter().sum();
+        if total <= 0.0 {
+            return None;
+        }
+        let mut target = rng.next_f32() * total;
+        for (mode, weight) in COLORS.iter().zip(color_weights) {
+            target -= weight;
+            if target < 0.0 {
+                return Some(*mode);
+            }
+        }
+        Some(COLORS[COLORS.len() - 1])
     }
 
     fn pick_mode(rng: &mut Rng, weights: &[f32; MODES.len()]) -> Option<Mode> {
@@ -597,6 +693,7 @@ mod tests {
             weights: [1.0; MODES.len()],
             seed: 7,
             deterministic: true,
+            stack: 0.0,
         }
     }
 
@@ -629,6 +726,25 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn stack_colors_a_history_glitch() {
+        let weights = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        let plain = Settings {
+            weights,
+            stack: 0.0,
+            ..settings()
+        };
+        let stacked = Settings {
+            weights,
+            stack: 1.0,
+            ..settings()
+        };
+        let plain_audio = render(&plain, true, SR as usize);
+        let stacked_audio = render(&stacked, true, SR as usize);
+        assert_ne!(plain_audio, stacked_audio);
+        assert_eq!(stacked_audio, render(&stacked, true, SR as usize));
     }
 
     #[test]

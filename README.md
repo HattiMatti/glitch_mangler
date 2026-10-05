@@ -5,7 +5,8 @@ A tempo-synced random stutter/glitch CLAP effect written in Rust with
 
 On every grid step the plugin rolls a dice (`Chance`). When it hits, it picks one
 of the effects below (weighted by their knobs) and runs it for a random number
-of steps, up to `Max Length`:
+of steps, up to `Max Length`. `Stack` is the chance that Crush, Gate, or Rebound
+also runs on a Stutter, Reverse, Tape Stop, or Scramble:
 
 | Effect    | What it does                                                      |
 | --------- | ----------------------------------------------------------------- |

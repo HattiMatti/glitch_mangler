@@ -11,7 +11,7 @@ mod engine;
 use editor::ManglerEditor;
 use engine::{Engine, Settings};
 
-const WINDOW_SIZE: LogicalSize<f32> = LogicalSize::new(680.0, 510.0);
+const WINDOW_SIZE: LogicalSize<f32> = LogicalSize::new(680.0, 560.0);
 
 #[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
 enum Grid {
@@ -56,6 +56,8 @@ struct ManglerParams {
     seed: IntParam,
     #[id = "lock"]
     deterministic: BoolParam,
+    #[id = "stack"]
+    stack: FloatParam,
 
     #[id = "w_stutter"]
     stutter: FloatParam,
@@ -90,6 +92,7 @@ impl Default for ManglerParams {
             mix: percent("Mix", 1.0).with_smoother(SmoothingStyle::Linear(20.0)),
             seed: IntParam::new("Seed", 1, IntRange::Linear { min: 0, max: 999 }),
             deterministic: BoolParam::new("Lock to Song", true),
+            stack: percent("Stack", 0.25),
 
             stutter: percent("Stutter", 1.0),
             reverse: percent("Reverse", 0.5),
@@ -119,6 +122,7 @@ impl ManglerParams {
             ],
             seed: self.seed.value() as u32,
             deterministic: self.deterministic.value(),
+            stack: self.stack.value(),
         }
     }
 }
@@ -255,9 +259,9 @@ impl ClapPlugin for GlitchMangler {
                 page.add_param(&p.grid);
                 page.add_param(&p.max_steps);
                 page.add_param(&p.mix);
+                page.add_param(&p.stack);
                 page.add_param(&p.seed);
                 page.add_param(&p.deterministic);
-                page.add_spacer();
                 page.add_spacer();
             });
             section.add_page("Effects", |page| {

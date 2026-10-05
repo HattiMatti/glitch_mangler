@@ -92,6 +92,12 @@ impl NiceEguiApp for ManglerEditor {
                         );
                         slider(
                             &mut cols[0],
+                            &params.stack,
+                            &setter,
+                            Some("Chance that Crush, Gate, or Rebound also runs on a Stutter, Reverse, Tape Stop, or Scramble."),
+                        );
+                        slider(
+                            &mut cols[0],
                             &params.seed,
                             &setter,
                             Some("Picks a different pattern. The same seed repeats the same glitches."),
