@@ -11,7 +11,7 @@ mod engine;
 use editor::ManglerEditor;
 use engine::{Engine, Settings};
 
-const WINDOW_SIZE: LogicalSize<f32> = LogicalSize::new(680.0, 460.0);
+const WINDOW_SIZE: LogicalSize<f32> = LogicalSize::new(680.0, 510.0);
 
 #[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
 enum Grid {
@@ -69,6 +69,8 @@ struct ManglerParams {
     crush: FloatParam,
     #[id = "w_gate"]
     gate: FloatParam,
+    #[id = "w_rebound"]
+    rebound: FloatParam,
 }
 
 fn percent(name: &str, default: f32) -> FloatParam {
@@ -95,6 +97,7 @@ impl Default for ManglerParams {
             scramble: percent("Scramble", 0.5),
             crush: percent("Crush", 0.3),
             gate: percent("Gate", 0.3),
+            rebound: percent("Rebound", 0.45),
         }
     }
 }
@@ -112,6 +115,7 @@ impl ManglerParams {
                 self.scramble.value(),
                 self.crush.value(),
                 self.gate.value(),
+                self.rebound.value(),
             ],
             seed: self.seed.value() as u32,
             deterministic: self.deterministic.value(),
@@ -233,7 +237,7 @@ impl Plugin for GlitchMangler {
 impl ClapPlugin for GlitchMangler {
     const CLAP_ID: &'static str = "com.hattimatti.glitch-mangler";
     const CLAP_DESCRIPTION: Option<&'static str> =
-        Some("Tempo-synced random stutter, reverse, tape stop, scramble, crush and gate");
+        Some("Tempo-synced random stutter, reverse, tape stop, scramble, crush, gate and rebound");
     const CLAP_MANUAL_URL: Option<&'static str> = None;
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
     const CLAP_FEATURES: &'static [ClapFeature] = &[
@@ -263,7 +267,7 @@ impl ClapPlugin for GlitchMangler {
                 page.add_param(&p.scramble);
                 page.add_param(&p.crush);
                 page.add_param(&p.gate);
-                page.add_spacer();
+                page.add_param(&p.rebound);
                 page.add_spacer();
             });
         });

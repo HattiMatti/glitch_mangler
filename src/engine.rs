@@ -5,6 +5,10 @@ const HISTORY_SECONDS: f32 = 12.0;
 const FADE_SECONDS: f32 = 0.003;
 const GATE_SMOOTH_SECONDS: f32 = 0.001;
 const MIN_SLICE_SAMPLES: f64 = 64.0;
+/// Resonance of the low-pass. High enough that each cutoff snap rings.
+const REBOUND_Q: f32 = 7.0;
+/// Cutoff used when a step slams shut.
+const REBOUND_SHUT_HZ: f32 = 40.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -14,15 +18,17 @@ pub enum Mode {
     Scramble,
     Crush,
     Gate,
+    Rebound,
 }
 
-pub const MODES: [Mode; 6] = [
+pub const MODES: [Mode; 7] = [
     Mode::Stutter,
     Mode::Reverse,
     Mode::TapeStop,
     Mode::Scramble,
     Mode::Crush,
     Mode::Gate,
+    Mode::Rebound,
 ];
 
 #[derive(Clone, Copy, Debug)]
@@ -151,6 +157,16 @@ enum Kind {
         period: f64,
         gain: f32,
     },
+    /// Resonant low-pass. Cutoff is held, then snapped, along an open–shut–open curve.
+    Rebound {
+        floor_hz: f32,
+        /// Cutoff holds in this event. Each one is half a grid step.
+        divisions: u32,
+        /// Bit `i` set means hold `i` slams the filter shut.
+        drop_mask: u32,
+        ic1eq: [f32; 2],
+        ic2eq: [f32; 2],
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -171,6 +187,7 @@ impl Event {
         input: [f32; 2],
         fade_len: f64,
         gate_coef: f32,
+        sample_rate: f32,
     ) -> [f32; 2] {
         let t = self.elapsed as f64;
         let out = match &mut self.kind {
@@ -222,6 +239,40 @@ impl Event {
                 };
                 *gain += (target - *gain) * gate_coef;
                 input.map(|x| x * *gain)
+            }
+            Kind::Rebound {
+                floor_hz,
+                divisions,
+                drop_mask,
+                ic1eq,
+                ic2eq,
+            } => {
+                let progress = (t / self.expected_len).clamp(0.0, 1.0) as f32;
+                let n = *divisions as f32;
+                let index = ((progress * n).floor() as u32).min(*divisions - 1);
+                let shut = (*drop_mask & (1u32 << index)) != 0;
+                // Sample the open–shut–open curve once per hold, so the cutoff jumps instead of gliding.
+                let bounce = if shut {
+                    1.0
+                } else {
+                    let center = (index as f32 + 0.5) / n;
+                    (center * std::f32::consts::PI).sin()
+                };
+                let open_hz = sample_rate * 0.42;
+                let floor = if shut { REBOUND_SHUT_HZ } else { *floor_hz };
+                let cutoff = open_hz * (floor / open_hz).powf(bounce);
+                let mut out = [0.0; 2];
+                for ch in 0..2 {
+                    out[ch] = svf_low(
+                        input[ch],
+                        cutoff,
+                        REBOUND_Q,
+                        sample_rate,
+                        &mut ic1eq[ch],
+                        &mut ic2eq[ch],
+                    );
+                }
+                out
             }
         };
         self.elapsed += 1;
@@ -305,7 +356,13 @@ impl Engine {
 
         if let Some(ev) = &mut self.active {
             ev.env = (ev.env + fade).min(1.0);
-            let out = ev.render(&self.history, input, self.fade_len, self.gate_coef);
+            let out = ev.render(
+                &self.history,
+                input,
+                self.fade_len,
+                self.gate_coef,
+                self.sample_rate,
+            );
             wet = [wet[0] + out[0] * ev.env, wet[1] + out[1] * ev.env];
             env_sum += ev.env;
         }
@@ -314,7 +371,13 @@ impl Engine {
             if ev.env <= 0.0 {
                 self.retiring = None;
             } else {
-                let out = ev.render(&self.history, input, self.fade_len, self.gate_coef);
+                let out = ev.render(
+                    &self.history,
+                    input,
+                    self.fade_len,
+                    self.gate_coef,
+                    self.sample_rate,
+                );
                 wet = [wet[0] + out[0] * ev.env, wet[1] + out[1] * ev.env];
                 env_sum += ev.env;
             }
@@ -333,6 +396,7 @@ impl Engine {
             Kind::Scramble { .. } => Mode::Scramble,
             Kind::Crush { .. } => Mode::Crush,
             Kind::Gate { .. } => Mode::Gate,
+            Kind::Rebound { .. } => Mode::Rebound,
         })
     }
 
@@ -438,6 +502,30 @@ impl Engine {
                 period: step_len / rng.pick(&[1.0, 2.0, 3.0, 4.0]),
                 gain: 1.0,
             },
+            Mode::Rebound => {
+                // Two holds per grid step, so a one-step glitch snaps twice and a long one gets a run.
+                let divisions = (steps * 2).clamp(1, 32);
+                let mut drop_mask = 0u32;
+                // A few holds in the middle slam shut. The first and last stay on the curve so the
+                // event still opens and closes on the dry tone.
+                let room = divisions.saturating_sub(2);
+                let drops = if room == 0 {
+                    0
+                } else {
+                    (1 + rng.below((divisions / 8).max(1))).min(room)
+                };
+                for _ in 0..drops {
+                    let step = 1 + rng.below(room);
+                    drop_mask |= 1u32 << step;
+                }
+                Kind::Rebound {
+                    floor_hz: 140.0 * 2.0f32.powf(rng.next_f32() * 2.3),
+                    divisions,
+                    drop_mask,
+                    ic1eq: [0.0; 2],
+                    ic2eq: [0.0; 2],
+                }
+            }
         };
 
         Some(Event {
@@ -464,6 +552,35 @@ impl Engine {
         }
         Some(MODES[MODES.len() - 1])
     }
+}
+
+/// Unity-gain low-pass of a Cytomic state-variable filter. `ic1eq` / `ic2eq` are the integrator
+/// states and must persist across samples.
+fn svf_low(
+    input: f32,
+    freq: f32,
+    q: f32,
+    sample_rate: f32,
+    ic1eq: &mut f32,
+    ic2eq: &mut f32,
+) -> f32 {
+    let freq = freq.clamp(40.0, sample_rate * 0.45);
+    let g = (std::f32::consts::PI * freq / sample_rate).tan();
+    let k = 1.0 / q.max(0.5);
+    let a1 = 1.0 / (1.0 + g * (g + k));
+    let a2 = g * a1;
+    let a3 = g * a2;
+
+    let v3 = input - *ic2eq;
+    let v1 = a1 * *ic1eq + a2 * v3;
+    let v2 = *ic2eq + a2 * *ic1eq + a3 * v3;
+    *ic1eq = flush_denormal(2.0 * v1 - *ic1eq);
+    *ic2eq = flush_denormal(2.0 * v2 - *ic2eq);
+    v2
+}
+
+fn flush_denormal(x: f32) -> f32 {
+    if x.abs() < 1.0e-15 { 0.0 } else { x }
 }
 
 #[cfg(test)]
@@ -506,7 +623,9 @@ mod tests {
             let s = Settings { seed, ..settings() };
             for frame in render(&s, true, SR as usize * 4) {
                 for x in frame {
-                    assert!(x.is_finite() && x.abs() <= 1.0, "seed {seed}: {x}");
+                    // A snapped high-Q low-pass can ring well above the test tone (peak 0.8).
+                    // 8.0 still catches a filter that has run away.
+                    assert!(x.is_finite() && x.abs() <= 8.0, "seed {seed}: {x}");
                 }
             }
         }
@@ -550,11 +669,11 @@ mod tests {
 
     #[test]
     fn no_hard_clicks_at_event_boundaries() {
-        // A constant input should never jump by more than the fade allows, except inside crush and
-        // gate which deliberately reshape the signal. The history is filled first so reads into
-        // the past don't hit the silence from before the input started.
+        // A constant input should never jump by more than the fade allows, except inside crush,
+        // gate, and rebound, which deliberately reshape the signal. The history is filled first so
+        // reads into the past don't hit the silence from before the input started.
         let s = Settings {
-            weights: [1.0, 1.0, 1.0, 1.0, 0.0, 0.0],
+            weights: [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0],
             ..settings()
         };
         let mut engine = Engine::default();

@@ -15,6 +15,7 @@ of steps, up to `Max Length`:
 | Scramble  | Jumps back 1–8 steps and replays that audio                       |
 | Crush     | Bit reduction and sample-rate reduction                           |
 | Gate      | Rhythmic chopping at the step rate                                |
+| Rebound   | Cutoff snaps twice per grid step from open to shut and back, and some steps ring into near silence |
 
 With `Lock to Song` on (default), the randomness is derived from the song
 position and `Seed`, so the same part of the arrangement glitches identically

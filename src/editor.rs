@@ -140,6 +140,12 @@ impl NiceEguiApp for ManglerEditor {
                             &setter,
                             Some("Chops the signal in rhythm with the grid."),
                         );
+                        slider(
+                            &mut cols[1],
+                            &params.rebound,
+                            &setter,
+                            Some("Cutoff snaps twice per grid step, from open to shut and back. Some steps drop to near silence and ring."),
+                        );
                     });
                 });
         });
