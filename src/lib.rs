@@ -11,7 +11,7 @@ mod engine;
 use editor::ManglerEditor;
 use engine::{Engine, Settings};
 
-const WINDOW_SIZE: LogicalSize<f32> = LogicalSize::new(680.0, 560.0);
+const WINDOW_SIZE: LogicalSize<f32> = LogicalSize::new(680.0, 620.0);
 
 #[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
 enum Grid {
@@ -58,6 +58,8 @@ struct ManglerParams {
     deterministic: BoolParam,
     #[id = "stack"]
     stack: FloatParam,
+    #[id = "haunt"]
+    haunt: FloatParam,
 
     #[id = "w_stutter"]
     stutter: FloatParam,
@@ -92,7 +94,8 @@ impl Default for ManglerParams {
             mix: percent("Mix", 1.0).with_smoother(SmoothingStyle::Linear(20.0)),
             seed: IntParam::new("Seed", 1, IntRange::Linear { min: 0, max: 999 }),
             deterministic: BoolParam::new("Lock to Song", true),
-            stack: percent("Stack", 0.25),
+            stack: percent("Stack", 0.0),
+            haunt: percent("Haunt", 0.0),
 
             stutter: percent("Stutter", 1.0),
             reverse: percent("Reverse", 0.5),
@@ -123,6 +126,7 @@ impl ManglerParams {
             seed: self.seed.value() as u32,
             deterministic: self.deterministic.value(),
             stack: self.stack.value(),
+            haunt: self.haunt.value(),
         }
     }
 }
@@ -133,17 +137,23 @@ struct GlitchMangler {
     sample_rate: f32,
     editor_state: Arc<EguiEditorState>,
     initial_editor: Option<ManglerEditor>,
+    repaint: RepaintNotifier,
 }
 
 impl Default for GlitchMangler {
     fn default() -> Self {
         let params = Arc::new(ManglerParams::default());
+        let engine = Engine::default();
         Self {
             editor_state: EguiEditorState::from_size(WINDOW_SIZE, 1.0),
-            initial_editor: Some(ManglerEditor::new(params.clone())),
+            initial_editor: Some(ManglerEditor::new(
+                params.clone(),
+                engine.share_transcript(),
+            )),
             params,
-            engine: Engine::default(),
+            engine,
             sample_rate: 0.0,
+            repaint: RepaintNotifier::new(),
         }
     }
 }
@@ -179,7 +189,7 @@ impl Plugin for GlitchMangler {
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Self::Editor> {
         create_egui_editor(
             self.editor_state.clone(),
-            RepaintNotifier::new(),
+            self.repaint.clone(),
             EguiNiceSettings::new().with_tile("Glitch Mangler"),
             self.initial_editor.take()?,
         )
@@ -217,6 +227,10 @@ impl Plugin for GlitchMangler {
         };
         let beats_per_sample = tempo / 60.0 / self.sample_rate as f64;
         let settings = self.params.settings();
+        let meter = (
+            transport.time_sig_numerator.unwrap_or(4),
+            transport.time_sig_denominator.unwrap_or(4),
+        );
 
         for (i, mut frame) in buffer.iter_samples().enumerate() {
             let mix = self.params.mix.smoothed.next();
@@ -226,11 +240,14 @@ impl Plugin for GlitchMangler {
             let right = frame.get_mut(1).map_or(left, |x| *x);
             let wet = self
                 .engine
-                .process([left, right], song_beats, tempo, &settings);
+                .process([left, right], song_beats, tempo, meter, &settings);
 
             let dry = [left, right];
             for (ch, sample) in frame.iter_mut().enumerate().take(2) {
                 *sample = dry[ch] + (wet[ch] - dry[ch]) * mix;
+            }
+            if self.engine.take_transcript_dirty() {
+                self.repaint.request_repaint();
             }
         }
 
@@ -240,8 +257,9 @@ impl Plugin for GlitchMangler {
 
 impl ClapPlugin for GlitchMangler {
     const CLAP_ID: &'static str = "com.hattimatti.glitch-mangler";
-    const CLAP_DESCRIPTION: Option<&'static str> =
-        Some("Tempo-synced random stutter, reverse, tape stop, scramble, crush, gate and rebound");
+    const CLAP_DESCRIPTION: Option<&'static str> = Some(
+        "Tempo-synced random stutter, reverse, tape stop, scramble, crush, gate, rebound and haunt",
+    );
     const CLAP_MANUAL_URL: Option<&'static str> = None;
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
     const CLAP_FEATURES: &'static [ClapFeature] = &[
@@ -260,9 +278,9 @@ impl ClapPlugin for GlitchMangler {
                 page.add_param(&p.max_steps);
                 page.add_param(&p.mix);
                 page.add_param(&p.stack);
+                page.add_param(&p.haunt);
                 page.add_param(&p.seed);
                 page.add_param(&p.deterministic);
-                page.add_spacer();
             });
             section.add_page("Effects", |page| {
                 page.add_param(&p.stutter);

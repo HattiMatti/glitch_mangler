@@ -6,6 +6,7 @@ use nice_plug::context::gui::GuiContext;
 use nice_plug::prelude::*;
 use nice_plug_egui::NiceEguiApp;
 
+use crate::engine::Transcript;
 use crate::{Grid, ManglerParams};
 
 const NEON: egui::Color32 = egui::Color32::from_rgb(57, 255, 92);
@@ -16,6 +17,7 @@ const INK: egui::Color32 = egui::Color32::from_rgb(8, 12, 9);
 
 pub struct ManglerEditor {
     params: Arc<ManglerParams>,
+    transcript: Transcript,
     open_state: Option<OpenEditorState>,
 }
 
@@ -24,9 +26,10 @@ struct OpenEditorState {
 }
 
 impl ManglerEditor {
-    pub fn new(params: Arc<ManglerParams>) -> Self {
+    pub fn new(params: Arc<ManglerParams>, transcript: Transcript) -> Self {
         Self {
             params,
+            transcript,
             open_state: None,
         }
     }
@@ -62,7 +65,18 @@ impl NiceEguiApp for ManglerEditor {
                 .show(ui, |ui| {
                     ui.label(title("Glitch Mangler"));
                     rule(ui, NEON.gamma_multiply(0.45));
-                    ui.add_space(10.0);
+                    ui.add_space(8.0);
+                    let line = self.transcript.text();
+                    ui.label(
+                        egui::RichText::new(if line.is_empty() { "—".to_owned() } else { line })
+                            .size(13.0)
+                            .color(VALUE),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::Help)
+                    .on_hover_text(
+                        "The latest glitch, at the bar and beat where it started.",
+                    );
+                    ui.add_space(8.0);
 
                     ui.columns(2, |cols| {
                         section_label(&mut cols[0], "Playback");
@@ -94,7 +108,13 @@ impl NiceEguiApp for ManglerEditor {
                             &mut cols[0],
                             &params.stack,
                             &setter,
-                            Some("Chance that Crush, Gate, or Rebound also runs on a Stutter, Reverse, Tape Stop, or Scramble."),
+                            Some("Chance that Crush, Gate, or Rebound cuts in and out, in rhythm, over a Stutter, Reverse, Tape Stop, or Scramble."),
+                        );
+                        slider(
+                            &mut cols[0],
+                            &params.haunt,
+                            &setter,
+                            Some("Chance that a glitch replays the last glitch exactly, so a stutter from one bar comes back in a later one."),
                         );
                         slider(
                             &mut cols[0],
