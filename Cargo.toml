@@ -1,0 +1,15 @@
+[package]
+name = "audio_plugin"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+egui = { version = "0.36", default-features = false, features = ["bytemuck"] }
+nice-plug = "0.4"
+nice-plug-egui = "0.5"
+
+[profile.dev]
+opt-level = 1
