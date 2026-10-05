@@ -1,9 +1,17 @@
+use nice_plug::editor::dpi::LogicalSize;
 use nice_plug::prelude::*;
+use nice_plug_egui::{
+    EguiEditor, EguiEditorState, EguiNiceSettings, RepaintNotifier, create_egui_editor,
+};
 use std::sync::Arc;
 
+mod editor;
 mod engine;
 
+use editor::ManglerEditor;
 use engine::{Engine, Settings};
+
+const WINDOW_SIZE: LogicalSize<f32> = LogicalSize::new(680.0, 460.0);
 
 #[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
 enum Grid {
@@ -111,11 +119,25 @@ impl ManglerParams {
     }
 }
 
-#[derive(Default)]
 struct GlitchMangler {
     params: Arc<ManglerParams>,
     engine: Engine,
     sample_rate: f32,
+    editor_state: Arc<EguiEditorState>,
+    initial_editor: Option<ManglerEditor>,
+}
+
+impl Default for GlitchMangler {
+    fn default() -> Self {
+        let params = Arc::new(ManglerParams::default());
+        Self {
+            editor_state: EguiEditorState::from_size(WINDOW_SIZE, 1.0),
+            initial_editor: Some(ManglerEditor::new(params.clone())),
+            params,
+            engine: Engine::default(),
+            sample_rate: 0.0,
+        }
+    }
 }
 
 impl Plugin for GlitchMangler {
@@ -138,12 +160,21 @@ impl Plugin for GlitchMangler {
         },
     ];
 
-    type Editor = ();
+    type Editor = EguiEditor<ManglerEditor>;
     type SysExMessage = ();
     type BackgroundTask = ();
 
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
+    }
+
+    fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Self::Editor> {
+        create_egui_editor(
+            self.editor_state.clone(),
+            RepaintNotifier::new(),
+            EguiNiceSettings::new().with_tile("Glitch Mangler"),
+            self.initial_editor.take()?,
+        )
     }
 
     fn activate(
@@ -171,7 +202,11 @@ impl Plugin for GlitchMangler {
     ) -> ProcessStatus {
         let transport = context.transport();
         let tempo = transport.tempo.unwrap_or(120.0);
-        let block_beats = if transport.playing { transport.pos_beats() } else { None };
+        let block_beats = if transport.playing {
+            transport.pos_beats()
+        } else {
+            None
+        };
         let beats_per_sample = tempo / 60.0 / self.sample_rate as f64;
         let settings = self.params.settings();
 
@@ -181,7 +216,9 @@ impl Plugin for GlitchMangler {
 
             let left = frame.get_mut(0).map_or(0.0, |x| *x);
             let right = frame.get_mut(1).map_or(left, |x| *x);
-            let wet = self.engine.process([left, right], song_beats, tempo, &settings);
+            let wet = self
+                .engine
+                .process([left, right], song_beats, tempo, &settings);
 
             let dry = [left, right];
             for (ch, sample) in frame.iter_mut().enumerate().take(2) {

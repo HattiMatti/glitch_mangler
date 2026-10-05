@@ -120,10 +120,7 @@ impl History {
         let a = (floor as i64 as u64 & self.mask) as usize;
         let b = ((floor as i64 + 1) as u64 & self.mask) as usize;
         let [l, r] = &self.channels;
-        [
-            l[a] + (l[b] - l[a]) * frac,
-            r[a] + (r[b] - r[a]) * frac,
-        ]
+        [l[a] + (l[b] - l[a]) * frac, r[a] + (r[b] - r[a]) * frac]
     }
 }
 
@@ -168,7 +165,13 @@ struct Event {
 }
 
 impl Event {
-    fn render(&mut self, history: &History, input: [f32; 2], fade_len: f64, gate_coef: f32) -> [f32; 2] {
+    fn render(
+        &mut self,
+        history: &History,
+        input: [f32; 2],
+        fade_len: f64,
+        gate_coef: f32,
+    ) -> [f32; 2] {
         let t = self.elapsed as f64;
         let out = match &mut self.kind {
             Kind::Stutter {
@@ -212,7 +215,11 @@ impl Event {
                 *held
             }
             Kind::Gate { period, gain } => {
-                let target = if t % *period < *period * 0.5 { 1.0 } else { 0.0 };
+                let target = if t % *period < *period * 0.5 {
+                    1.0
+                } else {
+                    0.0
+                };
                 *gain += (target - *gain) * gate_coef;
                 input.map(|x| x * *gain)
             }
@@ -254,7 +261,8 @@ impl Engine {
     /// Allocates the history buffer. Must be called before processing, never from the audio thread.
     pub fn prepare(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
-        self.history.allocate((sample_rate * HISTORY_SECONDS) as usize);
+        self.history
+            .allocate((sample_rate * HISTORY_SECONDS) as usize);
         self.fade_len = (sample_rate * FADE_SECONDS).max(1.0) as f64;
         self.gate_coef = 1.0 - (-1.0 / (sample_rate * GATE_SMOOTH_SECONDS)).exp();
         self.reset();
@@ -270,7 +278,13 @@ impl Engine {
 
     /// Processes one stereo frame and returns the fully wet output. `song_beats` is the transport
     /// position in quarter notes while the host is playing, or `None` to run on an internal clock.
-    pub fn process(&mut self, input: [f32; 2], song_beats: Option<f64>, tempo: f64, settings: &Settings) -> [f32; 2] {
+    pub fn process(
+        &mut self,
+        input: [f32; 2],
+        song_beats: Option<f64>,
+        tempo: f64,
+        settings: &Settings,
+    ) -> [f32; 2] {
         self.history.push(input);
         let now = self.history.write as f64 - 1.0;
 
@@ -322,7 +336,15 @@ impl Engine {
         })
     }
 
-    fn on_step(&mut self, step: i64, contiguous: bool, synced: bool, now: f64, tempo: f64, s: &Settings) {
+    fn on_step(
+        &mut self,
+        step: i64,
+        contiguous: bool,
+        synced: bool,
+        now: f64,
+        tempo: f64,
+        s: &Settings,
+    ) {
         if let Some(ev) = &mut self.active {
             if contiguous && ev.steps_left > 1 {
                 ev.steps_left -= 1;
@@ -339,28 +361,46 @@ impl Engine {
         };
         // Throw away the first output so that nearby seeds/steps don't produce correlated rolls.
         rng.next_u64();
-        self.active = Self::roll(&mut rng, now, tempo, self.sample_rate, self.history.len(), s);
+        self.active = Self::roll(
+            &mut rng,
+            now,
+            tempo,
+            self.sample_rate,
+            self.history.len(),
+            s,
+        );
         if !deterministic {
             self.rng = rng;
         }
     }
 
-    fn roll(rng: &mut Rng, now: f64, tempo: f64, sample_rate: f32, history_len: usize, s: &Settings) -> Option<Event> {
+    fn roll(
+        rng: &mut Rng,
+        now: f64,
+        tempo: f64,
+        sample_rate: f32,
+        history_len: usize,
+        s: &Settings,
+    ) -> Option<Event> {
         if rng.next_f32() >= s.chance {
             return None;
         }
         let mode = Self::pick_mode(rng, &s.weights)?;
 
-        let step_len = (s.step_beats * 60.0 / tempo.max(1.0) * sample_rate as f64).max(MIN_SLICE_SAMPLES);
+        let step_len =
+            (s.step_beats * 60.0 / tempo.max(1.0) * sample_rate as f64).max(MIN_SLICE_SAMPLES);
         // Bias towards short events, and leave headroom in the history for reverse/scramble reads.
         let budget = (history_len as f64 * 0.45 / step_len).floor().max(1.0) as u32;
         let u = rng.next_f32();
-        let steps = (1 + (u * u * s.max_steps.max(1) as f32) as u32).min(s.max_steps.max(1)).min(budget);
+        let steps = (1 + (u * u * s.max_steps.max(1) as f32) as u32)
+            .min(s.max_steps.max(1))
+            .min(budget);
         let expected_len = steps as f64 * step_len;
 
         let kind = match mode {
             Mode::Stutter => {
-                let slice_len = (step_len / rng.pick(&[1.0, 2.0, 2.0, 3.0, 4.0, 4.0, 6.0, 8.0])).max(MIN_SLICE_SAMPLES);
+                let slice_len = (step_len / rng.pick(&[1.0, 2.0, 2.0, 3.0, 4.0, 4.0, 6.0, 8.0]))
+                    .max(MIN_SLICE_SAMPLES);
                 let speed = match rng.below(10) {
                     0 => 0.5,
                     1 => 2.0,
@@ -380,7 +420,9 @@ impl Engine {
             Mode::Reverse => Kind::Reverse,
             Mode::TapeStop => Kind::TapeStop { pos: 0.0 },
             Mode::Scramble => {
-                let max_back = ((history_len as f64 * 0.9 - expected_len) / step_len).floor().max(1.0) as u32;
+                let max_back = ((history_len as f64 * 0.9 - expected_len) / step_len)
+                    .floor()
+                    .max(1.0) as u32;
                 let back = 1 + rng.below(8.min(max_back));
                 Kind::Scramble {
                     offset: back as f64 * step_len,
@@ -473,12 +515,18 @@ mod tests {
     #[test]
     fn deterministic_mode_repeats_exactly() {
         let s = settings();
-        assert_eq!(render(&s, true, SR as usize * 2), render(&s, true, SR as usize * 2));
+        assert_eq!(
+            render(&s, true, SR as usize * 2),
+            render(&s, true, SR as usize * 2)
+        );
     }
 
     #[test]
     fn zero_chance_is_transparent() {
-        let s = Settings { chance: 0.0, ..settings() };
+        let s = Settings {
+            chance: 0.0,
+            ..settings()
+        };
         for (i, frame) in render(&s, false, 10_000).into_iter().enumerate() {
             assert_eq!(frame, input(i));
         }
@@ -517,7 +565,11 @@ mod tests {
             let beats = Some(i as f64 * 140.0 / 60.0 / SR as f64);
             let out = engine.process([0.5, 0.5], beats, 140.0, &s)[0];
             if i > warmup {
-                assert!((out - prev).abs() < 0.05, "jump of {} at sample {i}", out - prev);
+                assert!(
+                    (out - prev).abs() < 0.05,
+                    "jump of {} at sample {i}",
+                    out - prev
+                );
             }
             prev = out;
         }

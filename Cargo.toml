@@ -7,7 +7,7 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-egui = { version = "0.36", default-features = false, features = ["bytemuck"] }
+egui = { version = "0.36", default-features = false, features = ["bytemuck", "default_fonts"] }
 nice-plug = "0.4"
 nice-plug-egui = "0.5"
 
